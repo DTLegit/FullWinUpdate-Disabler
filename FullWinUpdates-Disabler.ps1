@@ -26,7 +26,7 @@
 #----------------------------
 # Configurable parameters
 #----------------------------
-$psexecUrl = "https://download.sysinternals.com/files/PsExec.exe"
+$psexecUrl = "https://github.com/DTLegit/FullWinUpdate-Disabler/raw/refs/heads/main/PsExec.exe"
 $permanentDir = Join-Path $env:USERPROFILE "Documents\WUControlScripts"
 
 #----------------------------
