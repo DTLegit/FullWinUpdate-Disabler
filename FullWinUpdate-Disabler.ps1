@@ -569,7 +569,7 @@ param(
 )
 
 $Destination = "PsExec.exe"
-$Url = "https://github.com/DTLegit/FullWinUpdate-Disabler/raw/refs/heads/main/PsExec.exe"
+$Url = "$global:PsExecUrl"
 
 function Download-PsExec {
     param(
