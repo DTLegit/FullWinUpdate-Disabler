@@ -568,34 +568,35 @@ param(
     [string]$Action = "download"
 )
 
-$psExecFile = "PsExec.exe"
-$downloadUrl = "$global:PsExecUrl"
+$Destination = "PsExec.exe"
+$Url = "https://github.com/DTLegit/FullWinUpdate-Disabler/raw/refs/heads/main/PsExec.exe"
 
 function Download-PsExec {
     param(
         [string]$Url,
         [string]$Destination
     )
-    $methods = 1,2,3
-    foreach ($method in $methods) {
+    
+    $Methods = 1,2,3
+    foreach ($Method in $Methods) {
         for ($attempt = 1; $attempt -le 3; $attempt++) {
-            Write-Host "Downloading PsExec.exe: Method $method, Attempt $attempt..."
+            Write-Host "Downloading PsExec.exe: Method $Method, Attempt $attempt..."
             try {
-                switch ($method) {
+                switch ($Method) {
                     1 { Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -ErrorAction Stop }
                     2 { Start-BitsTransfer -Source $Url -Destination $Destination -ErrorAction Stop }
                     3 { 
-                        $wc = New-Object System.Net.WebClient
-                        $wc.DownloadFile($Url, $Destination)
+                        $webClient = New-Object System.Net.WebClient
+                        $webClient.DownloadFile($Url, $Destination)
                     }
                 }
                 if (Test-Path $Destination) {
-                    Write-Host "PsExec.exe downloaded successfully using Method $method on Attempt $attempt."
+                    Write-Host "PsExec.exe downloaded successfully using Method $Method on Attempt $attempt."
                     return $true
                 }
             }
             catch {
-                Write-Host "Method $method, Attempt $attempt failed: $($_.Exception.Message)"
+                Write-Host "Method $Method, Attempt $attempt failed: $_"
             }
         }
     }
@@ -603,13 +604,13 @@ function Download-PsExec {
 }
 
 if ($Action -eq "download") {
-    if (Test-Path $psExecFile) {
+    if (Test-Path $Destination) {
         Write-Host "PsExec.exe already exists in the current directory."
         exit 0
     }
     else {
-        $success = Download-PsExec -Url $downloadUrl -Destination $psExecFile
-        if (-not $success) {
+        $downloadSuccessful = Download-PsExec -Url $Url -Destination $Destination
+        if (-not $downloadSuccessful) {
             Write-Host "Failed to download PsExec.exe after all attempts. Exiting with error code 1."
             exit 1
         }
@@ -619,8 +620,8 @@ if ($Action -eq "download") {
     }
 }
 elseif ($Action -eq "cleanup") {
-    if (Test-Path $psExecFile) {
-        Remove-Item -Path $psExecFile -Force -ErrorAction SilentlyContinue
+    if (Test-Path $Destination) {
+        Remove-Item -Path $Destination -Force -ErrorAction SilentlyContinue
         Write-Host "PsExec.exe has been deleted from the current directory."
     }
     exit 0
