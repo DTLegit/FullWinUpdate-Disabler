@@ -62,31 +62,32 @@ NOTES:
   - The PsExec download URL is defined in a single location and is reused across all modules.
 =================================================================================================================
 #>
-
+# Define $global:OriginalDesktop and $global:PermanentFolder.
+# $global:OriginalDesktop - The original user's Desktop path.
 # $global:PermanentFolder - Path and name to the folder of saved files. 
-$global:PermanentFolder   = Join-Path $global:OriginalDesktop "WUControlScripts"
+$desktopPath = [Environment]::GetFolderPath("Desktop")
+if ([string]::IsNullOrEmpty($desktopPath)) {
+    Write-Host "No user Desktop found. Using C:\Temp as a fallback."
+    $desktopPath = "C:\Temp"
+}
+$global:OriginalDesktop = $desktopPath
+$global:PermanentFolder = Join-Path $global:OriginalDesktop "WUControlScripts"
 
 #-----------------------------
 # Start Transcript for Logging
 #-----------------------------
-# Note: This will capture all console output. For comprehensive logging (including external processes),
-# additional redirection might be necessary.
+# This will capture all console output.
 $transcriptPath = Join-Path $global:PermanentFolder "FullWinUpdateDisabler_Transcript.log"
 Start-Transcript -Path $transcriptPath -Append
 
 #===============================================================================
-# Script Configuration and Path Capture - Define Global Variable
+# Script Configuration and Path Capture - Define $global:OriginalDocuments and $global:PsExecUrl 
 #===============================================================================
 # This module captures and sets the following global variables:
-#
-#   $global:OriginalDesktop     - The original user's Desktop path.
 #   $global:OriginalDocuments   - The original user's Documents folder path.
 #   $global:PsExecUrl           - The centralized URL from which PsExec.exe will be downloaded.
-# 
 # These values are used by later modules to ensure that permanent files and shortcuts 
 # are saved in the correct user-accessible locations and that the PsExec URL is defined only once.
-
-    $global:OriginalDesktop   = [Environment]::GetFolderPath("Desktop")
     $global:OriginalDocuments = [Environment]::GetFolderPath("MyDocuments")
     $global:PsExecUrl         = "https://github.com/DTLegit/FullWinUpdate-Disabler/raw/refs/heads/main/PsExec.exe" # <--- CHANGE ME! Point this variable to the URL of where the PsExec.exe would be hosted. THIS IS NEEDED FOR THIS SCRIPT TO FULLY FUNCTION!!! 
 
@@ -174,31 +175,76 @@ function Test-InternetConnection {
 # Module 3: System Restore Point Creation
 #===============================================================================
 # This function creates a system restore point so that the user can revert the system 
-# to a previous state if anything goes wrong. It uses the Checkpoint-Computer cmdlet.
-# If the restore point creation fails (for example, if system restore is disabled), 
-# the function warns the user and prompts for confirmation before proceeding.
+# to a previous state if anything goes wrong. It uses code and logic from Chris Titus Tech's Restore Point Creation Tweak, found within WinUtil. 
+# (Thank you Chris!!!)  
+# The function asks and advises the user on creating a restore point, and prompts for confirmation before proceeding in the creation of one.
 function Create-SystemRestorePoint {
-    Write-Host "Attempting to create a system restore point..."
-    Write-Host "A system restore point is highly advised, as this script will make some modifications to"
-    Write-Host "some core system services, tasks, and files. You can easily revert your system back in case if something"
-    Write-Host "goes wrong."
+	
+	# Ask the user if they want to create a restore point now.
+    $userResponse = Read-Host "Do you want to create a system restore point now? It is advised that you create one before proceeding with this script. (Y/N) (Recommended: Y)"
+    if ($userResponse -notin @("Y", "y")) {
+        Write-Host "Skipping system restore point creation as per user choice."
+        return
+    }
+	
+    Write-Host "Enabling System Restore for drive $env:SystemDrive..."
     try {
-        # Create a restore point with a descriptive name.
-        # The RestorePointType 'MODIFY_SETTINGS' is used to indicate a manual restore point.
-        Checkpoint-Computer -Description "Pre-WUControlScript Restore Point" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-        Write-Host "System restore point created successfully."
+        Enable-ComputerRestore -Drive "$env:SystemDrive"
     }
     catch {
-        Write-Host "WARNING: Failed to create a system restore point. This might be because system restore is disabled on this system."
-        Write-Host "It is strongly recommended that you enable system restore before proceeding."
-        # Prompt the user to decide whether to continue or exit.
-        $userChoice = Read-Host "Do you want to continue without creating a restore point? (Y/N)"
-        if ($userChoice -notin @("Y", "y")) {
-            Write-Host "Exiting script as per user request."
-            exit
+        Write-Host "An error occurred while enabling System Restore: $_"
+    }
+
+    # Check if the SystemRestorePointCreationFrequency value exists
+    try {
+        $exists = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" -Name "SystemRestorePointCreationFrequency" -ErrorAction SilentlyContinue
+    }
+    catch {
+        Write-Host "Error checking SystemRestorePointCreationFrequency: $_"
+    }
+    if ($null -eq $exists) {
+        Write-Host "Changing system to allow multiple restore points per day..."
+        try {
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" -Name "SystemRestorePointCreationFrequency" -Value 0 -Type DWord -Force -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Host "Failed to set SystemRestorePointCreationFrequency: $_"
         }
     }
-} # End Create-SystemRestorePoint
+
+    # Import the required module for Get-ComputerRestorePoint.
+    try {
+        Import-Module Microsoft.PowerShell.Management -ErrorAction Stop
+    }
+    catch {
+        Write-Host "Failed to load the Microsoft.PowerShell.Management module: $_"
+        return
+    }
+
+    # Get all restore points created today.
+    try {
+        $existingRestorePoints = Get-ComputerRestorePoint | Where-Object { $_.CreationTime.Date -eq (Get-Date).Date }
+    }
+    catch {
+        Write-Host "Failed to retrieve restore points: $_"
+        return
+    }
+
+    # If no restore point has been created today, create one.
+    if ($existingRestorePoints.Count -eq 0) {
+        $description = "System Restore Point created by FullWinUpdate-Disabler Script."
+        try {
+            Checkpoint-Computer -Description $description -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
+            Write-Host -ForegroundColor Green "System Restore Point Created Successfully."
+        }
+        catch {
+            Write-Host -ForegroundColor Red "Failed to create a system restore point: $_"
+        }
+    }
+    else {
+        Write-Host "A restore point has already been created today. Skipping creation."
+    }
+}
 
 #===============================================================================
 # Module 4: Previous Script Run Check
@@ -285,73 +331,99 @@ function Check-PreviousRun {
 #      - The script is licensed under the Mozilla Public License (MPL).
 #
 # The user must explicitly confirm by entering "Y" to proceed. Otherwise, the script exits.
-
 function Show-Disclaimer {
-    # First fullscreen prompt: Detailed Overview and Important Risks
-    Clear-Host
-    Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
-    Write-Host "              Windows Update Control Script Overview      " -ForegroundColor Cyan
-    Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "This script will perform the following actions:" -ForegroundColor White
-    Write-Host "  • Disable Windows Update by stopping and disabling update services." -ForegroundColor White
-    Write-Host "  • Rename critical system DLLs to prevent Windows Update from functioning." -ForegroundColor White
-    Write-Host "  • Modify registry settings to block automatic updates." -ForegroundColor White
-    Write-Host "  • Delete the Windows Update download cache (SoftwareDistribution folder)." -ForegroundColor White
-    Write-Host "  • Disable scheduled tasks related to Windows Update." -ForegroundColor White
-    Write-Host ""
-    Write-Host "IMPORTANT RISKS:" -ForegroundColor Red
-    Write-Host "  - The script modifies protected system settings and files. Incorrect use" -ForegroundColor Red
-    Write-Host "    may render your system unstable or unbootable." -ForegroundColor Red
-    Write-Host "  - Changes made by this script may be irreversible without a system restore." -ForegroundColor Red
-    Write-Host "  - The script is intended solely for disabling/enabling Windows Update; any" -ForegroundColor Red
-    Write-Host "    modifications beyond its intended purpose are at your own risk." -ForegroundColor Red
-    Write-Host "  - This script will make Windows Update UI within the main settings page inaccessible." -ForegroundColor Red
-    Write-Host "  - Since Windows Update will be fully disabled, your PC will no longer be receiving any Windows updates." -ForegroundColor Red
-    Write-Host "  - Without updates, will PC will become vulnerable to security exploits in the long term." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "A system restore point has been created prior to making any modifications." -ForegroundColor White
-    Write-Host "Pleas also ensure that you have backed up any critical data before proceeding." -ForegroundColor White
-    Write-Host ""
-    Write-Host "Press any key to continue to the legal disclaimer..." -ForegroundColor Green
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    # Define the temporary file path for the combined notices.
+    $tempNoticePath = Join-Path $env:TEMP "TempNotices.ps1"
     
-    # Second fullscreen prompt: Legal Disclaimer and License Notice
-    Clear-Host
-    Write-Host "------------------------------------------------------------" -ForegroundColor Yellow
-    Write-Host "                          DISCLAIMER                      " -ForegroundColor Yellow
-    Write-Host "------------------------------------------------------------" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "WARNING:" -ForegroundColor Red
-    Write-Host "  This script makes extensive modifications to your system, including" -ForegroundColor White
-    Write-Host "  changes to system services, registry settings, and scheduled tasks." -ForegroundColor White
-    Write-Host ""
-    Write-Host "  Use this script at your own risk. The author(s) are not responsible" -ForegroundColor White
-    Write-Host "  for any damage, data loss, or system instability that may result from" -ForegroundColor White
-    Write-Host "  using or modifying this script." -ForegroundColor White
-    Write-Host ""
-    Write-Host "  By running this script, you acknowledge that you fully understand the risks" -ForegroundColor White
-    Write-Host "  involved and agree to hold the author(s) harmless for any consequences." -ForegroundColor White
-    Write-Host "  Furthermore, any modifications or misuse of this script is solely your" -ForegroundColor White
-    Write-Host "  responsibility."
-    Write-Host ""
-    Write-Host "  YOU HAVE BEEN WARNED!!!" -ForegroundColor White
-    Write-Host ""
-    Write-Host "LICENSE NOTICE:" -ForegroundColor Magenta
-    Write-Host "  This script is licensed under the Mozilla Public License (MPL)." -ForegroundColor White
-    Write-Host "  You may use, modify, and distribute this script under the terms of the MPL." -ForegroundColor White
-    Write-Host ""
-    Write-Host "If you encounter any issues, please report them or submit a pull request on" -ForegroundColor White
-    Write-Host "the script's GitHub repository."
-    Write-Host ""
-    Write-Host "Do you wish to continue? (Y/N)" -ForegroundColor Green
+    # Build the combined notice content using a single-quoted here-string.
+    $noticeContent = @'
+Clear-Host
+# Overview Section
+Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
+Write-Host "              Windows Update Control Script Overview      " -ForegroundColor Cyan
+Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "This script will perform the following actions:" -ForegroundColor White
+Write-Host "  * Disable Windows Update by stopping and disabling update services." -ForegroundColor White
+Write-Host "  * Rename critical system DLLs to prevent Windows Update from functioning." -ForegroundColor White
+Write-Host "  * Modify registry settings to block automatic updates." -ForegroundColor White
+Write-Host "  * Delete the Windows Update download cache (SoftwareDistribution folder)." -ForegroundColor White
+Write-Host "  * Disable scheduled tasks related to Windows Update." -ForegroundColor White
+Write-Host ""
+Write-Host "IMPORTANT RISKS:" -ForegroundColor Red
+Write-Host "  - The script modifies protected system settings and files. Incorrect use" -ForegroundColor Red
+Write-Host "    may render your system unstable or unbootable." -ForegroundColor Red
+Write-Host "  - Changes made by this script may be irreversible without a system restore." -ForegroundColor Red
+Write-Host "  - The script is intended solely for disabling/enabling Windows Update; any" -ForegroundColor Red
+Write-Host "    modifications beyond its intended purpose are made at your own risk." -ForegroundColor Red
+Write-Host "  - This script will make Windows Update UI within the main settings page inaccessible." -ForegroundColor Red
+Write-Host "  - Since Windows Update will be fully disabled, your PC will no longer be receiving any Windows updates," -ForegroundColor Red
+Write-Host "    until the modifications are reversed and Windows Update services are re-enabled again." -ForegroundColor Red
+Write-Host "  - Without updates, your PC will become vulnerable to security exploits in the long-term." -ForegroundColor Red
+Write-Host ""
+Write-Host "If you consented into doing so, a system restore point has been created prior to making any modifications." -ForegroundColor White
+Write-Host "Please also ensure that you have backed up any critical data before proceeding." -ForegroundColor White
+Write-Host ""
+Write-Host "Press any key to continue to the legal disclaimer..." -ForegroundColor Green
+
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Clear-Host
+
+# Legal Disclaimer Section
+Write-Host "------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "  DISCLAIMER  " -ForegroundColor Yellow
+Write-Host "------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "WARNING:" -ForegroundColor Red
+Write-Host "  This script takes a more agressive approach in disabling Windows Update, making some modifications to the Windows OS, including" -ForegroundColor White
+Write-Host "  renaming a couple of core files (a couple of Windows Update related DLLs), and changes to system services, registry settings, and scheduled tasks." -ForegroundColor White
+Write-Host ""
+Write-Host "  Use this script at your own risk. The author(s) are not responsible" -ForegroundColor White
+Write-Host "  for any damage, data loss, or system instability that may result from" -ForegroundColor White
+Write-Host "  using or modifying this script." -ForegroundColor White
+Write-Host ""
+Write-Host "  By running this script, you acknowledge that you fully understand the risks" -ForegroundColor White
+Write-Host "  involved and agree to hold the author(s) harmless for any consequences." -ForegroundColor White
+Write-Host "  Furthermore, any modifications or misuse of this script is solely your" -ForegroundColor White
+Write-Host "  responsibility."
+Write-Host ""
+Write-Host "  YOU HAVE BEEN WARNED!!!" -ForegroundColor White
+Write-Host ""
+Write-Host "LICENSE NOTICE:" -ForegroundColor Magenta
+Write-Host "  This script is licensed under the Mozilla Public License (MPL)." -ForegroundColor White
+Write-Host "  You may use, modify, and distribute this script under the terms of the MPL." -ForegroundColor White
+Write-Host ""
+Write-Host "If you encounter any issues, please report them or submit a pull request on" -ForegroundColor White
+Write-Host "the script's GitHub repository."
+Write-Host ""
+$response = Read-Host "Do you agree to continue? (Y/N)"
+if ($response -notin @("Y","y")) {
+    Write-Host "User did not agree. Exiting script..."
+    exit 1
+}
+Pause
+exit 0
+'@
     
-    $confirmation = Read-Host
-    if ($confirmation -notin @("Y", "y")) {
-        Write-Host "User did not confirm. Exiting script..."
-        exit
+    # Write the notice content to the temporary file.
+    $noticeContent | Out-File -FilePath $tempNoticePath -Encoding UTF8
+    
+    # Launch a new PowerShell window to run the temporary notice script.
+    try {
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempNoticePath`"" -Wait -PassThru
+        # If the external session exits with a nonzero exit code, then exit the main script.
+        if ($proc.ExitCode -ne 0) {
+            exit 1
+        }
     }
-} # End Show-Disclaimer
+    catch {
+        Write-Host "Failed to open the separate notice session: $_" -ForegroundColor Red
+        exit 1
+    }
+    
+    # Remove the temporary file after the session closes.
+    Remove-Item -Path $tempNoticePath -Force -ErrorAction SilentlyContinue
+}
 
 #===============================================================================
 # Module 6: Windows Defender Check and Disable
@@ -496,48 +568,48 @@ param(
     [string]$Action = "download"
 )
 
-\$psExecFile = "PsExec.exe"
-\$downloadUrl = "$global:PsExecUrl"
+$psExecFile = "PsExec.exe"
+$downloadUrl = "$global:PsExecUrl"
 
 function Download-PsExec {
     param(
-        [string]\$Url,
-        [string]\$Destination
+        [string]$Url,
+        [string]$Destination
     )
-    \$methods = 1,2,3
-    foreach (\$method in \$methods) {
-        for (\$attempt = 1; \$attempt -le 3; \$attempt++) {
-            Write-Host "Downloading PsExec.exe: Method \$method, Attempt \$attempt..."
+    $methods = 1,2,3
+    foreach ($method in $methods) {
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Downloading PsExec.exe: Method $method, Attempt $attempt..."
             try {
-                switch (\$method) {
-                    1 { Invoke-WebRequest -Uri \$Url -OutFile \$Destination -UseBasicParsing -ErrorAction Stop }
-                    2 { Start-BitsTransfer -Source \$Url -Destination \$Destination -ErrorAction Stop }
-                    3 {
-                        \$wc = New-Object System.Net.WebClient
-                        \$wc.DownloadFile(\$Url, \$Destination)
+                switch ($method) {
+                    1 { Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -ErrorAction Stop }
+                    2 { Start-BitsTransfer -Source $Url -Destination $Destination -ErrorAction Stop }
+                    3 { 
+                        $wc = New-Object System.Net.WebClient
+                        $wc.DownloadFile($Url, $Destination)
                     }
                 }
-                if (Test-Path \$Destination) {
-                    Write-Host "PsExec.exe downloaded successfully using Method \$method on Attempt \$attempt."
-                    return \$true
+                if (Test-Path $Destination) {
+                    Write-Host "PsExec.exe downloaded successfully using Method $method on Attempt $attempt."
+                    return $true
                 }
             }
             catch {
-                Write-Host "Method \$method, Attempt \$attempt failed: \$($_.Exception.Message)"
+                Write-Host "Method $method, Attempt $attempt failed: $($_.Exception.Message)"
             }
         }
     }
-    return \$false
+    return $false
 }
 
-if (\$Action -eq "download") {
-    if (Test-Path \$psExecFile) {
+if ($Action -eq "download") {
+    if (Test-Path $psExecFile) {
         Write-Host "PsExec.exe already exists in the current directory."
         exit 0
     }
     else {
-        \$success = Download-PsExec -Url \$downloadUrl -Destination \$psExecFile
-        if (-not \$success) {
+        $success = Download-PsExec -Url $downloadUrl -Destination $psExecFile
+        if (-not $success) {
             Write-Host "Failed to download PsExec.exe after all attempts. Exiting with error code 1."
             exit 1
         }
@@ -546,9 +618,9 @@ if (\$Action -eq "download") {
         }
     }
 }
-elseif (\$Action -eq "cleanup") {
-    if (Test-Path \$psExecFile) {
-        Remove-Item -Path \$psExecFile -Force -ErrorAction SilentlyContinue
+elseif ($Action -eq "cleanup") {
+    if (Test-Path $psExecFile) {
+        Remove-Item -Path $psExecFile -Force -ErrorAction SilentlyContinue
         Write-Host "PsExec.exe has been deleted from the current directory."
     }
     exit 0
@@ -557,6 +629,7 @@ else {
     Write-Host "Invalid action specified. Use 'download' or 'cleanup'."
     exit 1
 }
+
 "@
 
     # Write the content to the destination file.
@@ -746,64 +819,66 @@ function PermBatchCreation {
 
     # Define the content for "disable updates.bat".
     $disableBatchContent = @"
-    @echo off
-    REM -----------------------------------------------------------------------------
-    REM Permanent Update Disabler Batch File: disable updates.bat
-    REM This file disables Windows Update and related components.
-    REM It checks for PsExec.exe in the current directory.
-    REM If PsExec.exe is not found, it calls the dedicated download script to download it.
-    REM After performing its tasks, it calls the download script to clean up (delete PsExec.exe).
-    REM -----------------------------------------------------------------------------
+@echo off
+REM -----------------------------------------------------------------------------
+REM Permanent Update Disabler Batch File: disable updates.bat
+REM This file disables Windows Update and related components.
+REM It checks for PsExec.exe in the current directory.
+REM If PsExec.exe is not found, it calls the dedicated download script to download it.
+REM After performing its tasks, it calls the download script to clean up (delete PsExec.exe).
+REM -----------------------------------------------------------------------------
 
-    REM Check for PsExec.exe in the current directory.
-    if not exist "%~dp0\PsExec.exe" (
-        echo PsExec.exe not found. Attempting to download...
-        powershell -NoProfile -ExecutionPolicy Bypass -File "DownloadPsExec.ps1" download
-        if errorlevel 1 (
-            echo Failed to download PsExec.exe. Exiting...
-            exit /b 1
-        )
+REM Check for PsExec.exe in the current directory.
+if not exist "%~dp0\PsExec.exe" (
+    echo PsExec.exe not found. Attempting to download...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "DownloadPsExec.ps1" download
+    if errorlevel 1 (
+        echo Failed to download PsExec.exe. Exiting...
+        exit /b 1
     )
+)
 
-    REM Ensure administrator and SYSTEM privileges.
-    if not "%1"=="admin" (
-        powershell start -verb runas "%~f0" admin & exit /b
-    )
-    if not "%2"=="system" (
-        powershell . "%~dp0\PsExec.exe" /accepteula -i -s -d "%~f0" admin system & exit /b
-    )
+REM Ensure administrator and SYSTEM privileges.
+if not "%1"=="admin" (
+    powershell start -verb runas "%~f0" admin & exit /b
+)
+if not "%2"=="system" (
+    powershell . "%~dp0\PsExec.exe" /accepteula -i -s -d "%~f0" admin system & exit /b
+)
 
-    REM Disable update related services.
-    for %%i in (wuauserv, UsoSvc, uhssvc, WaaSMedicSvc) do (
-        net stop %%i
-        sc config %%i start= disabled
-        sc failure %%i reset= 0 actions= ""
-   )
+REM Disable update related services.
+for %%i in (wuauserv, UsoSvc, uhssvc, WaaSMedicSvc) do (
+    net stop %%i
+    sc config %%i start= disabled
+    sc failure %%i reset= 0 actions= ""
+)
 
-    REM Brute force rename services.
-    for %%i in (WaaSMedicSvc, wuaueng) do (
-        takeown /f C:\Windows\System32\%%i.dll && icacls C:\Windows\System32\%%i.dll /grant *S-1-1-0:F
-        rename C:\Windows\System32\%%i.dll %%i_BAK.dll
-        icacls C:\Windows\System32\%%i_BAK.dll /setowner "NT SERVICE\TrustedInstaller" && icacls C:\Windows\System32\%%i_BAK.dll /remove *S-1-1-0
-    )
+REM Brute force rename services.
+for %%i in (WaaSMedicSvc, wuaueng) do (
+    takeown /f C:\Windows\System32\%%i.dll && icacls C:\Windows\System32\%%i.dll /grant *S-1-1-0:F
+    rename C:\Windows\System32\%%i.dll %%i_BAK.dll
+    icacls C:\Windows\System32\%%i_BAK.dll /setowner "NT SERVICE\TrustedInstaller" && icacls C:\Windows\System32\%%i_BAK.dll /remove *S-1-1-0
+)
 
-    REM Update registry settings.
-    reg add "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" /v Start /t REG_DWORD /d 4 /f
-    reg add "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" /v FailureActions /t REG_BINARY /d 000000000000000000000000030000001400000000000000c0d4010000000000e09304000000000000000000 /f
-    reg add "HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoUpdate /t REG_DWORD /d 1 /f
+REM Update registry settings.
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" /v Start /t REG_DWORD /d 4 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" /v FailureActions /t REG_BINARY /d 000000000000000000000000030000001400000000000000c0d4010000000000e09304000000000000000000 /f
+reg add "HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoUpdate /t REG_DWORD /d 1 /f
 
-    REM Delete downloaded update files.
-    erase /f /s /q c:\windows\softwaredistribution\*.* && rmdir /s /q c:\windows\softwaredistribution
+REM Delete downloaded update files.
+erase /f /s /q c:\windows\softwaredistribution\*.* && rmdir /s /q c:\windows\softwaredistribution
 
-    REM Disable all update related scheduled tasks.
-    powershell -command "Get-ScheduledTask -TaskPath '\Microsoft\Windows\InstallService\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\UpdateOrchestrator\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\UpdateAssistant\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\WaaSMedic\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\WindowsUpdate\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\WindowsUpdate\*' | Disable-ScheduledTask"
+REM Disable all update related scheduled tasks.
+powershell -command "Get-ScheduledTask -TaskPath '\Microsoft\Windows\InstallService\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\UpdateOrchestrator\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\UpdateAssistant\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\WaaSMedic\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\Windows\WindowsUpdate\*' | Disable-ScheduledTask; Get-ScheduledTask -TaskPath '\Microsoft\WindowsUpdate\*' | Disable-ScheduledTask"
 
-    echo Finished
-    pause
+echo Finished
+pause
 
-    REM Clean up: Delete PsExec.exe using the dedicated download script (cleanup action).
-    powershell -NoProfile -ExecutionPolicy Bypass -File "DownloadPsExec.ps1" cleanup
-    "@
+REM Clean up: Delete PsExec.exe using the dedicated download script (cleanup action).
+cd /d "%~dp0"
+taskkill /IM PsExec.exe /F >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0\DownloadPsExec.ps1" cleanup
+"@
 
     # Write the "disable updates.bat" content.
     $disableBatchContent | Out-File -FilePath $disableBatchPath -Encoding ASCII
@@ -811,54 +886,56 @@ function PermBatchCreation {
 
     # Define the content for "use update services.bat".
     $reEnableBatchContent = @"
-    @echo off
-    REM -----------------------------------------------------------------------------
-    REM Permanent Update Re-Enabler Batch File: use update services.bat
-    REM This file re-enables Windows Update service for applications that rely on it.
-    REM It checks for PsExec.exe in the current directory.
-    REM If PsExec.exe is not found, it calls the dedicated download script to download it.
-    REM After performing its tasks, it calls the download script to clean up (delete PsExec.exe).
-    REM -----------------------------------------------------------------------------
+@echo off
+REM -----------------------------------------------------------------------------
+REM Permanent Update Re-Enabler Batch File: use update services.bat
+REM This file re-enables Windows Update service for applications that rely on it.
+REM It checks for PsExec.exe in the current directory.
+REM If PsExec.exe is not found, it calls the dedicated download script to download it.
+REM After performing its tasks, it calls the download script to clean up (delete PsExec.exe).
+REM -----------------------------------------------------------------------------
 
-    REM Check for PsExec.exe in the current directory.
-    if not exist "%~dp0\PsExec.exe" (
-        echo PsExec.exe not found. Attempting to download...
-        powershell -NoProfile -ExecutionPolicy Bypass -File "DownloadPsExec.ps1" download
-        if errorlevel 1 (
-            echo Failed to download PsExec.exe. Exiting...
-            exit /b 1
-        )
+REM Check for PsExec.exe in the current directory.
+if not exist "%~dp0\PsExec.exe" (
+    echo PsExec.exe not found. Attempting to download...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "DownloadPsExec.ps1" download
+    if errorlevel 1 (
+        echo Failed to download PsExec.exe. Exiting...
+        exit /b 1
     )
+)
 
-    REM Ensure administrator and SYSTEM privileges.
-    if not "%1"=="admin" (
-        powershell start -verb runas "%~f0" admin & exit /b
-    )
-    if not "%2"=="system" (
-        powershell . "%~dp0\PsExec.exe" /accepteula -i -s -d "%~f0" admin system & exit /b
-    )
+REM Ensure administrator and SYSTEM privileges.
+if not "%1"=="admin" (
+    powershell start -verb runas "%~f0" admin & exit /b
+)
+if not "%2"=="system" (
+    powershell . "%~dp0\PsExec.exe" /accepteula -i -s -d "%~f0" admin system & exit /b
+)
 
-    REM Restore renamed services.
-    for %%i in (wuaueng) do (
-        takeown /f C:\Windows\System32\%%i_BAK.dll && icacls C:\Windows\System32\%%i_BAK.dll /grant *S-1-1-0:F
-        rename C:\Windows\System32\%%i_BAK.dll %%i.dll
-        icacls C:\Windows\System32\%%i.dll /setowner "NT SERVICE\TrustedInstaller" && icacls C:\Windows\System32\%%i.dll /remove *S-1-1-0
-    )
+REM Restore renamed services.
+for %%i in (wuaueng) do (
+    takeown /f C:\Windows\System32\%%i_BAK.dll && icacls C:\Windows\System32\%%i_BAK.dll /grant *S-1-1-0:F
+    rename C:\Windows\System32\%%i_BAK.dll %%i.dll
+    icacls C:\Windows\System32\%%i.dll /setowner "NT SERVICE\TrustedInstaller" && icacls C:\Windows\System32\%%i.dll /remove *S-1-1-0
+)
 
-    REM Change service configuration to re-enable Windows Update.
-    sc config wuauserv start= auto
+REM Change service configuration to re-enable Windows Update.
+sc config wuauserv start= auto
 
-    echo.
-    echo Enabled Windows Update Service
-    echo You can now use software that relies on the Windows Update Service.
-    echo When finished, you can run the disabler again.
-    echo More info in README
-    echo.
-    pause
+echo.
+echo Enabled Windows Update Service
+echo You can now use software that relies on the Windows Update Service.
+echo When finished, you can run the disabler again.
+echo More info in README
+echo.
+pause
 
-    REM Clean up: Delete PsExec.exe using the dedicated download script (cleanup action).
-    powershell -NoProfile -ExecutionPolicy Bypass -File "DownloadPsExec.ps1" cleanup
-    "@
+REM Clean up: Delete PsExec.exe using the dedicated download script (cleanup action).
+cd /d "%~dp0"
+taskkill /IM PsExec.exe /F >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0\DownloadPsExec.ps1" cleanup
+"@
 
     # Write the "use update services.bat" content.
     $reEnableBatchContent | Out-File -FilePath $reEnableBatchPath -Encoding ASCII
@@ -895,7 +972,7 @@ function PermBatchCreation {
 
     Write-Host "Permanent batch files and desktop shortcuts have been successfully created in $permanentFolder." -ForegroundColor Cyan
 
-} # End PermBatchCreation
+  } # End PermBatchCreation
 
 #===============================================================================
 # Module 10: Final Cleanup
@@ -951,7 +1028,9 @@ try {
     if (-not (Test-InternetConnection)) { exit }
     Create-SystemRestorePoint
     Check-PreviousRun
+	Write-Host "Displaying script overview and disclaimer notice..."
     Show-Disclaimer
+	Write-Host "User confirmation successful. Proceeding with Defender Check..."
     Defender-CheckNDisable
     Generate-PsExecDownloadScript -DestinationFolder $global:PermanentFolder
     Write-Host "A download script for the PSExec.exe file for future uses of the saved batch files has been successfully saved!" -ForegroundColor Green
