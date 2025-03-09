@@ -828,6 +828,14 @@ REM If PsExec.exe is not found, it calls the dedicated download script to downlo
 REM After performing its tasks, it calls the download script to clean up (delete PsExec.exe).
 REM -----------------------------------------------------------------------------
 
+cd /d "%~dp0"
+
+if not exist "%~dp0\DownloadPsExec.ps1" (
+    echo DownloadPsExec.ps1 was not found in %~dp0.
+    pause
+    exit /b 1
+)
+
 REM Check for PsExec.exe in the current directory.
 if not exist "%~dp0\PsExec.exe" (
     echo PsExec.exe not found. Attempting to download...
@@ -840,10 +848,10 @@ if not exist "%~dp0\PsExec.exe" (
 
 REM Ensure administrator and SYSTEM privileges.
 if not "%1"=="admin" (
-    powershell start -verb runas "%~f0" admin & exit /b
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList 'admin'" & exit /b
 )
 if not "%2"=="system" (
-    powershell . "%~dp0\PsExec.exe" /accepteula -i -s -d "%~f0" admin system & exit /b
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "& { & '%~dp0\PsExec.exe' /accepteula -i -s -d '%~f0' admin system }" & exit /b
 )
 
 REM Disable update related services.
@@ -895,6 +903,14 @@ REM If PsExec.exe is not found, it calls the dedicated download script to downlo
 REM After performing its tasks, it calls the download script to clean up (delete PsExec.exe).
 REM -----------------------------------------------------------------------------
 
+cd /d "%~dp0"
+
+if not exist "%~dp0\DownloadPsExec.ps1" (
+    echo DownloadPsExec.ps1 was not found in %~dp0.
+    pause
+    exit /b 1
+)
+
 REM Check for PsExec.exe in the current directory.
 if not exist "%~dp0\PsExec.exe" (
     echo PsExec.exe not found. Attempting to download...
@@ -907,10 +923,10 @@ if not exist "%~dp0\PsExec.exe" (
 
 REM Ensure administrator and SYSTEM privileges.
 if not "%1"=="admin" (
-    powershell start -verb runas "%~f0" admin & exit /b
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -ArgumentList 'admin'" & exit /b
 )
 if not "%2"=="system" (
-    powershell . "%~dp0\PsExec.exe" /accepteula -i -s -d "%~f0" admin system & exit /b
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "& { & '%~dp0\PsExec.exe' /accepteula -i -s -d '%~f0' admin system }" & exit /b
 )
 
 REM Restore renamed services.
