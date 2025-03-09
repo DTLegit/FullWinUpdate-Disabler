@@ -527,10 +527,10 @@ function Defender-CheckNDisable {
 #   To clean up (delete) PsExec.exe after use:
 #       powershell -NoProfile -ExecutionPolicy Bypass -File "DownloadPsExec.ps1" cleanup
 #===============================================================================
-
 function Generate-PsExecDownloadScript {
     param(
-        [string]$DestinationFolder
+        [string]$DestinationFolder,
+        [string]$DownloadUrlParam = $global:PsExecUrl
     )
     
     # Ensure the destination folder exists.
@@ -539,7 +539,7 @@ function Generate-PsExecDownloadScript {
             New-Item -ItemType Directory -Path $DestinationFolder -ErrorAction Stop | Out-Null
         }
         catch {
-            Write-Host "Error creating destination folder: $($DestinationFolder). Exiting..." -ForegroundColor Red
+            Write-Host "Error creating destination folder: $DestinationFolder. Exiting..." -ForegroundColor Red
             exit 1
         }
     }
@@ -547,7 +547,9 @@ function Generate-PsExecDownloadScript {
     # Define the path for the dedicated script.
     $scriptPath = Join-Path $DestinationFolder "DownloadPsExec.ps1"
     
-    # Create the script content.
+    # Build the script content.
+    # We use a double-quoted here-string so that we can interpolate the parent's URL.
+    # All other dollar signs that should remain in the generated code are escaped with a backtick.
     $scriptContent = @"
 <#
 .SYNOPSIS
@@ -560,57 +562,55 @@ function Generate-PsExecDownloadScript {
 .PARAMETER Action
     Specify 'download' to download PsExec.exe (default) or 'cleanup' to delete it.
 .NOTES
-    The centralized PsExec download URL is passed via the global environment variable
-    'PsExecUrl' defined in the main script.
+    The centralized PsExec download URL is passed as a parameter during script generation.
 #>
 
 param(
-    [string]$Action = "download"
+    [string]`$Action = "download"
 )
 
-$Destination = "PsExec.exe"
-$Url = "$global:PsExecUrl"
+`$psExecFile = "PsExec.exe"
+`$downloadUrl = "$($DownloadUrlParam)"
 
 function Download-PsExec {
     param(
-        [string]$Url,
-        [string]$Destination
+        [string]`$Url,
+        [string]`$Destination
     )
-    
-    $Methods = 1,2,3
-    foreach ($Method in $Methods) {
-        for ($attempt = 1; $attempt -le 3; $attempt++) {
-            Write-Host "Downloading PsExec.exe: Method $Method, Attempt $attempt..."
+    `$methods = 1,2,3
+    foreach (`$method in `$methods) {
+        for (`$attempt = 1; `$attempt -le 3; `$attempt++) {
+            Write-Host "Downloading PsExec.exe: Method `$method, Attempt `$attempt..."
             try {
-                switch ($Method) {
-                    1 { Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -ErrorAction Stop }
-                    2 { Start-BitsTransfer -Source $Url -Destination $Destination -ErrorAction Stop }
+                switch (`$method) {
+                    1 { Invoke-WebRequest -Uri `$Url -OutFile `$Destination -UseBasicParsing -ErrorAction Stop }
+                    2 { Start-BitsTransfer -Source `$Url -Destination `$Destination -ErrorAction Stop }
                     3 { 
-                        $webClient = New-Object System.Net.WebClient
-                        $webClient.DownloadFile($Url, $Destination)
+                        `$wc = New-Object System.Net.WebClient
+                        `$wc.DownloadFile(`$Url, `$Destination)
                     }
                 }
-                if (Test-Path $Destination) {
-                    Write-Host "PsExec.exe downloaded successfully using Method $Method on Attempt $attempt."
-                    return $true
+                if (Test-Path `$Destination) {
+                    Write-Host "PsExec.exe downloaded successfully using Method `$method on Attempt `$attempt."
+                    return `$true
                 }
             }
             catch {
-                Write-Host "Method $Method, Attempt $attempt failed: $_"
+                Write-Host "Method `$method, Attempt `$attempt failed: `$($_.Exception.Message)"
             }
         }
     }
-    return $false
+    return `$false
 }
 
-if ($Action -eq "download") {
-    if (Test-Path $Destination) {
+if (`$Action -eq "download") {
+    if (Test-Path `$psExecFile) {
         Write-Host "PsExec.exe already exists in the current directory."
         exit 0
     }
     else {
-        $downloadSuccessful = Download-PsExec -Url $Url -Destination $Destination
-        if (-not $downloadSuccessful) {
+        `$downloadSuccessful = Download-PsExec -Url `$downloadUrl -Destination `$psExecFile
+        if (-not `$downloadSuccessful) {
             Write-Host "Failed to download PsExec.exe after all attempts. Exiting with error code 1."
             exit 1
         }
@@ -619,9 +619,9 @@ if ($Action -eq "download") {
         }
     }
 }
-elseif ($Action -eq "cleanup") {
-    if (Test-Path $Destination) {
-        Remove-Item -Path $Destination -Force -ErrorAction SilentlyContinue
+elseif (`$Action -eq "cleanup") {
+    if (Test-Path `$psExecFile) {
+        Remove-Item -Path `$psExecFile -Force -ErrorAction SilentlyContinue
         Write-Host "PsExec.exe has been deleted from the current directory."
     }
     exit 0
@@ -630,19 +630,12 @@ else {
     Write-Host "Invalid action specified. Use 'download' or 'cleanup'."
     exit 1
 }
-
 "@
-
+    
     # Write the content to the destination file.
     $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
     Write-Host "Dedicated PsExec download script generated at:" -ForegroundColor Cyan
     Write-Host $scriptPath -ForegroundColor White
-
-# Example usage:
-# To generate the script in the permanent folder (e.g., "WUControlScripts" on the Desktop),
-# call the function like:
-# Generate-PsExecDownloadScript -DestinationFolder (Join-Path $global:OriginalDesktop "WUControlScripts")
-
 } # End Generate-PsExecDownloadScript
 
 #===============================================================================
