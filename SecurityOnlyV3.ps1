@@ -1,6 +1,46 @@
 # ================================================================
 # WindowsUpdateSettings_Master.ps1
 # ================================================================
+# This Windows Update script configures the Windows Operating System to only receive security-related updates (quality updates)
+# for the currently running feature update version of Windows until that current releases reaches end-of-life. 
+# Once the currently running major feature release of Windows is EOL, it will automatically download the latest feature update
+# and upgrade to the latest supported major feature version of Windows. 
+# 
+# Additionally, this script will also create and configure a task that re-runs a saved script, in which re-applies the settings if necessary
+# and utilizes a timestamp.txt file to ensure that settings reapplication takes place once every 364 days if the set values have either changed, has been removed,
+# or if the registry values it sets needs updating to reflect the current and latest running version of Windows on the system. 
+# 
+# This mechanism ensures that these settings stay in place and cannot be automatically removed by Microsoft or the Windows OS itself through an update 
+# and that these settings stay persistent through upgrades. This also ensures that only the user has the ability to remove these settings and revert Windows Update back to its default configuration
+# if they elect to do so. 
+# 
+# This script configures the following registry settings to the reference values: 
+# Under Registry Settings Path: Computer\HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate 
+# 
+# 1) DeferQualityUpdates = 1 (Decimal Value/DWord)
+# 2) TargetReleaseVersion = 1 (Decimal Value/DWord)
+# 3) ProductVersion = The Major Windows Version that has been detected (Either Windows 10 or Windows 11 at the time that this script is written.) - String Value
+# 4) TargetReleaseVersionInfo = The Subsequent Feature Update Version that is detected (2XHX at the time that this script is written. e.g. 24H2) - String Value
+# 5) DeferQualityUpdatesPeriodInDays = 4 (Decimal Value / DWord) - NOTE: This means that system deployment for quality updates are being delayed for four days after official release. 
+# -  The reasoning for this is to ensure that there are no issues and bugs that may occur from Microsoft's end, allowing for update retraction if needed before the quality update is applied to running systems. 
+# -  This also makes sure that the update is deployed on the weekend rather than on Patch Tuesday (second Tuesday of each month) when Microsoft releases the updates, which is when the PC is less likely to be actively being used
+#    in both business and residential home environments. 
+# 6) ExcludeWUDriversInQualityUpdate = 1 (Decimal Value / DWord) - Disables Driver Updates through Windows Update. The philosophy here is to increase system stability and prevent breakage by letting drivers install and update 
+#    via their own updaters and configurations in order to reduce risk of possible overrides or corruption imposed by Windows Update. 
+# 7) Under Computer\HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU
+#    - AUPowerManagement = 0 (Decimal Value / DWord) 
+# 
+# DESCRIPTION: The settings below here sets the user active hours to be between 8AM and 2AM, to where the PC only restarts automatically early in the morning to finish installing a deployed security updates.
+# This ensures that the PC auto-restarts only when the user is least likely to be using the PC. However, the user can revert back to enabling the auto-adjust setting or pick their own custom active times if they so wish. 
+#
+# Under Registry Settings Path: Computer\HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings
+# 1) AllowMUUpdateService = 0 (Decimal Value / DWord)
+# 2) SmartActiveHoursState = 0 (Decimal Value / DWord) 
+# 3) UserChoiceActiveHoursStart = 8 (Decimal Value / DWord)
+# 4) ActiveHoursStart = 8 (Decimal Value / DWord) 
+# 5) UserChoiceActiveHoursEnd = 2 (Decimal Value / DWord)
+# 6) ActiveHoursEnd = 2 (Decimal Value / DWord) 
+# 
 # This master script performs the following:
 # 1. Ensures it is running as Administrator. If not, it relaunches itself.
 # 2. Creates a folder structure in C:\ProgramData for storing:
@@ -20,6 +60,25 @@
 #    so that the Windows Update settings are checked and applied if necessary.
 #
 # Future modifications can be made by adjusting the child script.
+# 
+# Credit and shoutout goes to technology content creators Chris Titus Tech and Britec for their expertise on the Windows Operating System and Windows Update related settings and recommendations. 
+# They both played a huge part with both their video tutorial content and website articles showcasing which registry settings to tweak and the values to set them at in order to make this work. 
+# Once again, thanks to the both of them for sharing their knowledge, wisdom, and expertise in regards to this topic and large role in the inspiration of this script. 
+# 
+# DISCLAIMER: 
+# The settings and methods that this script employs have only been tested on and guaranteed to work on later versions of the Pro and Enterprise editions of Windows (although this will likely work on the Education edition as well). 
+# Microsoft limits and places restrictions on select registry settings and revokes access to the Group Policy Editor (gpedit.msc) on all Home editions of Windows. Therefore, it is not guaranteed that these settings will work
+# and that Windows / Windows Update will respect the settings that this script sets on Windows Home, until a successful workaround to these restrictions/limitations has been discovered to remedy this issue. So, it is advised that you upgrade to 
+# at least Windows Pro before you attempt to run this script to employ these policies. 
+#
+# LICENSING AND TERMS OF USE:
+# This script may be used, consumed, modified, included in other software, distributed, etc. under the terms and conditions set forth by the latest version of the Mozilla Public License (MPL). 
+# Although system breakage is certainly not likely, the author assumes no liability or responsibility for any outcomes associated with the use of this script. You accept that you use this at your own risk and that any impacts to your 
+# PC are under your sole responsibility and discretion. The creation of a system restore point and backup of sensitive data is advised before running this script if you are worried or concerned about potential breakage that would result from 
+# the settings and system modifications done by this script. Again, this is not likely, but this is a precaution in case if you at all concerned or worried. 
+# 
+# If any issues or problems arise or there are are any suggestions that you would like to make in improving this script, please feel free to either submit an issue or a PR request to the script's GitHub page if you feel so inclined.
+# I hope you enjoy the use of this tool as much as I have with creating this :). 
 # ================================================================
 
 # ----- Function: Test for Administrator Privileges -----
@@ -178,6 +237,8 @@ if ($InitialRun -or ($TimeSpan.TotalDays -ge 364)) {
     
     # ----- Registry Settings Verification & Application -----
     $ReapplyNeeded = $false
+    
+    # --- Check WindowsUpdate Policy Key ---
     $WURegPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
     $WUSettings = Get-ItemProperty -Path $WURegPath -ErrorAction SilentlyContinue
     if (-not $WUSettings) {
@@ -193,10 +254,30 @@ if ($InitialRun -or ($TimeSpan.TotalDays -ge 364)) {
         Write-Host "DEBUG: WindowsUpdate registry discrepancy detected."
         $ReapplyNeeded = $true
     }
+
+    # --- Check WindowsUpdate UX\Settings Key ---
+    $UXRegPath = "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings"
+    $UXSettings = Get-ItemProperty -Path $UXRegPath -ErrorAction SilentlyContinue
+    if (-not $UXSettings) {
+        Write-Host "DEBUG: WindowsUpdate UX\Settings key not found; it will be created."
+        $ReapplyNeeded = $true
+    }
+    else {
+        if (($UXSettings.ActiveHoursEnd -ne 24) -or
+            ($UXSettings.ActiveHoursStart -ne 6) -or
+            ($UXSettings.AllowMUUpdateService -ne 1) -or
+            ($UXSettings.SmartActiveHoursState -ne 0) -or
+            ($UXSettings.UserChoiceActiveHoursStart -ne 6) -or
+            ($UXSettings.UserChoiceActiveHoursEnd -ne 24)) {
+            Write-Host "DEBUG: WindowsUpdate UX\Settings registry discrepancy detected."
+            $ReapplyNeeded = $true
+        }
+    }
     
     # ----- Apply Registry Settings if Needed -----
     if ($InitialRun -or $ReapplyNeeded) {
         Write-Host "Applying registry settings..."
+        
         # --- Apply settings for WindowsUpdate key ---
         $RegistrySettings = @{
             "ProductVersion"                  = $ProductVersion
@@ -229,11 +310,36 @@ if ($InitialRun -or ($TimeSpan.TotalDays -ge 364)) {
             New-Item -Path $AUKey -Force | Out-Null
             Write-Host "DEBUG: Created AU subkey under WindowsUpdate."
         }
-        Set-ItemProperty -Path $AUKey -Name "NoAutoRebootWithLoggedOnUsers" -Type DWord -Value 1
+
         Set-ItemProperty -Path $AUKey -Name "AUPowerManagement" -Type DWord -Value 0
         Write-Host "Applied WindowsUpdate AU settings."
         
-        # (Additional registry updates for Device Metadata and Driver Searching can be added similarly.)
+        # --- Configure WindowsUpdate UX\Settings Key ---
+        $UXRegistrySettings = @{
+            "ActiveHoursEnd"            = 2
+            "ActiveHoursStart"          = 8
+            "AllowMUUpdateService"      = 0
+            "SmartActiveHoursState"     = 0
+            "UserChoiceActiveHoursStart"= 8
+            "UserChoiceActiveHoursEnd"  = 2
+        }
+        if (-not (Test-Path $UXRegPath)) { New-Item -Path $UXRegPath -Force | Out-Null }
+        foreach ($Name in $UXRegistrySettings.Keys) {
+            $Value = $UXRegistrySettings[$Name]
+            $Type  = "DWord"  # All are DWORD values
+            try {
+                $existingValue = Get-ItemProperty -Path $UXRegPath -Name $Name -ErrorAction SilentlyContinue
+                if ($null -eq $existingValue) {
+                    New-ItemProperty -Path $UXRegPath -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null
+                } else {
+                    Set-ItemProperty -Path $UXRegPath -Name $Name -Value $Value -Force
+                }
+                Write-Host "Set $Name to $Value ($Type)"
+            } catch {
+                Write-Host "Failed to set ${Name}: $_" -ForegroundColor Red
+            }
+        }
+
         gpupdate /force
         Write-Host "Registry settings applied."
         (Get-Date).ToString("o") | Out-File -FilePath $TimestampFile -Encoding UTF8
@@ -289,3 +395,6 @@ Write-Host "Scheduled task '$TaskName' registered."
 Write-Host "Running initial application of Windows Update security settings..."
 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Unrestricted -File `"$ChildScript`"" -Verb RunAs -Wait
 Write-Host "Initial Windows Update security settings applied!" -ForegroundColor Green
+Write-Host "The Windows Update Security Settings folder with the scheduled task-associated script, timestamp text file, and recent run logs have been saved to: " -ForegroundColor Green
+Write-Host "C:\ProgramData\Windows Updates Settings" 
+Write-Host "You can access these files at any time."
