@@ -263,12 +263,12 @@ if ($InitialRun -or ($TimeSpan.TotalDays -ge 364)) {
         $ReapplyNeeded = $true
     }
     else {
-        if (($UXSettings.ActiveHoursEnd -ne 24) -or
-            ($UXSettings.ActiveHoursStart -ne 6) -or
-            ($UXSettings.AllowMUUpdateService -ne 1) -or
+        if (($UXSettings.ActiveHoursEnd -ne 2) -or
+            ($UXSettings.ActiveHoursStart -ne 8) -or
+            ($UXSettings.AllowMUUpdateService -ne 0) -or
             ($UXSettings.SmartActiveHoursState -ne 0) -or
-            ($UXSettings.UserChoiceActiveHoursStart -ne 6) -or
-            ($UXSettings.UserChoiceActiveHoursEnd -ne 24)) {
+            ($UXSettings.UserChoiceActiveHoursStart -ne 8) -or
+            ($UXSettings.UserChoiceActiveHoursEnd -ne 2)) {
             Write-Host "DEBUG: WindowsUpdate UX\Settings registry discrepancy detected."
             $ReapplyNeeded = $true
         }
